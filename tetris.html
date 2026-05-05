@@ -124,6 +124,24 @@
   }
 
   #controls span { color: #aaa; }
+
+  #mute-btn {
+    width: 100%;
+    margin-top: 8px;
+    padding: 6px 0;
+    background: transparent;
+    color: #555;
+    border: 1px solid #333;
+    font-family: inherit;
+    font-size: 0.68rem;
+    letter-spacing: 1px;
+    cursor: pointer;
+    text-transform: uppercase;
+    transition: color 0.15s, border-color 0.15s;
+  }
+
+  #mute-btn:hover { color: #aaa; border-color: #666; }
+  #mute-btn.muted { color: #f55; border-color: #f55; }
 </style>
 </head>
 <body>
@@ -166,7 +184,9 @@
       <span>↓</span> Soft drop<br>
       <span>Space</span> Hard drop<br>
       <span>C</span> Shoot hole<br>
-      <span>P</span> Pause
+      <span>P</span> Pause<br>
+      <span>M</span> Mute<br>
+      <button id="mute-btn">SOUND: ON</button>
     </div>
   </div>
 </div>
@@ -221,6 +241,89 @@ const PIECES = [
   [[16,16,0],[0,16,0],[0,16,16]],             // F-shape (crinkle)
 ];
 
+// --- Audio system ---
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+let muted = false;
+
+function resumeAudio() {
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+}
+
+function tone(freq, type, startTime, dur, vol = 0.3, endFreq = null) {
+  if (muted) return;
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, startTime);
+  if (endFreq) osc.frequency.exponentialRampToValueAtTime(endFreq, startTime + dur);
+  gain.gain.setValueAtTime(vol, startTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, startTime + dur);
+  osc.start(startTime);
+  osc.stop(startTime + dur);
+}
+
+function soundMove() {
+  resumeAudio();
+  tone(220, 'square', audioCtx.currentTime, 0.04, 0.07);
+}
+
+function soundRotate() {
+  resumeAudio();
+  tone(330, 'square', audioCtx.currentTime, 0.07, 0.12, 500);
+}
+
+function soundLock() {
+  resumeAudio();
+  tone(150, 'square', audioCtx.currentTime, 0.1, 0.35, 80);
+}
+
+function soundHardDrop() {
+  resumeAudio();
+  tone(500, 'square', audioCtx.currentTime, 0.12, 0.45, 80);
+}
+
+function soundClear(count) {
+  resumeAudio();
+  const t = audioCtx.currentTime;
+  const freqSets = [[523], [523, 659], [523, 659, 784], [523, 659, 784, 1047]];
+  freqSets[count - 1].forEach((f, i) => tone(f, 'sine', t + i * 0.08, 0.25, 0.4));
+}
+
+function soundLevelUp() {
+  resumeAudio();
+  const t = audioCtx.currentTime;
+  [392, 523, 659, 784, 1047].forEach((f, i) => tone(f, 'square', t + i * 0.07, 0.15, 0.3));
+}
+
+function soundShoot() {
+  resumeAudio();
+  tone(1400, 'sawtooth', audioCtx.currentTime, 0.18, 0.35, 180);
+}
+
+function soundGameOver() {
+  resumeAudio();
+  const t = audioCtx.currentTime;
+  [494, 370, 294, 220].forEach((f, i) => tone(f, 'square', t + i * 0.18, 0.2, 0.4));
+}
+
+function soundStart() {
+  resumeAudio();
+  const t = audioCtx.currentTime;
+  [392, 523, 659, 784].forEach((f, i) => tone(f, 'sine', t + i * 0.1, 0.15, 0.3));
+}
+
+function toggleMute() {
+  muted = !muted;
+  const btn = document.getElementById('mute-btn');
+  btn.textContent = muted ? 'SOUND: OFF' : 'SOUND: ON';
+  btn.classList.toggle('muted', muted);
+}
+
+document.getElementById('mute-btn').addEventListener('click', toggleMute);
+// ---
+
 let board, piece, nextPiece, score, level, lines, shots, shootEffects, gameOver, paused, dropTimer, dropInterval, animFrame;
 
 function createBoard() {
@@ -271,7 +374,10 @@ function lock() {
       board[y][piece.x + c] = val;
     });
   });
-  clearLines();
+  const cleared = clearLines();
+  if (!cleared) soundLock();
+  else if (cleared.leveledUp) soundLevelUp();
+  else soundClear(cleared.count);
   piece = nextPiece;
   nextPiece = randomPiece();
   shots = 1;
@@ -280,22 +386,24 @@ function lock() {
 }
 
 function clearLines() {
-  let cleared = 0;
+  let count = 0;
   for (let r = ROWS - 1; r >= 0; r--) {
     if (board[r].every(v => v !== 0)) {
       board.splice(r, 1);
       board.unshift(new Array(COLS).fill(0));
-      cleared++;
+      count++;
       r++;
     }
   }
-  if (!cleared) return;
+  if (!count) return null;
   const points = [0, 100, 300, 500, 800];
-  score += (points[cleared] || 800) * level;
-  lines += cleared;
+  score += (points[count] || 800) * level;
+  lines += count;
+  const prevLevel = level;
   level = Math.floor(lines / 10) + 1;
   dropInterval = Math.max(80, 1000 - (level - 1) * 90);
   updateUI();
+  return { count, leveledUp: level > prevLevel };
 }
 
 function updateUI() {
@@ -332,6 +440,7 @@ function shoot() {
     }
   });
 
+  soundShoot();
   updateUI();
 }
 
@@ -341,6 +450,7 @@ function hardDrop() {
   piece.y += dy;
   score += dy * 2;
   updateUI();
+  soundHardDrop();
   lock();
 }
 
@@ -473,6 +583,7 @@ function startGame() {
   updateUI();
   drawNext();
   overlay.style.display = 'none';
+  soundStart();
   lastTime = performance.now();
   animFrame = requestAnimationFrame(gameLoop);
 }
@@ -480,6 +591,7 @@ function startGame() {
 function endGame() {
   gameOver = true;
   cancelAnimationFrame(animFrame);
+  soundGameOver();
   draw();
   overlay.style.display = 'flex';
   overlay.innerHTML = `
@@ -498,6 +610,7 @@ function tryRotate() {
     if (!collides(piece, kick, 0, rotated)) {
       piece.matrix = rotated;
       piece.x += kick;
+      soundRotate();
       return;
     }
   }
@@ -510,10 +623,15 @@ document.addEventListener('keydown', e => {
     if (!paused) { lastTime = performance.now(); animFrame = requestAnimationFrame(gameLoop); }
     return;
   }
+  if (e.code === 'KeyM') { toggleMute(); return; }
   if (paused) return;
   switch (e.code) {
-    case 'ArrowLeft':  if (!collides(piece, -1, 0)) piece.x--; break;
-    case 'ArrowRight': if (!collides(piece,  1, 0)) piece.x++; break;
+    case 'ArrowLeft':
+      if (!collides(piece, -1, 0)) { piece.x--; soundMove(); }
+      break;
+    case 'ArrowRight':
+      if (!collides(piece,  1, 0)) { piece.x++; soundMove(); }
+      break;
     case 'ArrowDown':
       if (!collides(piece, 0, 1)) { piece.y++; score++; updateUI(); }
       else lock();
